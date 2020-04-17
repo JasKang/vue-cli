@@ -1,15 +1,12 @@
 const path = require('path')
-const chalk = require('chalk')
 const debug = require('debug')
-const execa = require('execa')
 const inquirer = require('inquirer')
-const semver = require('semver')
 const EventEmitter = require('events')
 const Generator = require('./Generator')
 const cloneDeep = require('lodash.clonedeep')
 const sortObject = require('./util/sortObject')
 const getVersions = require('./util/getVersions')
-const { installDeps } = require('./util/installDeps')
+const PackageManager = require('./util/ProjectPackageManager')
 const { clearConsole } = require('./util/clearConsole')
 const PromptModuleAPI = require('./PromptModuleAPI')
 const writeFileTree = require('./util/writeFileTree')
@@ -17,25 +14,33 @@ const { formatFeatures } = require('./util/features')
 const loadLocalPreset = require('./util/loadLocalPreset')
 const loadRemotePreset = require('./util/loadRemotePreset')
 const generateReadme = require('./util/generateReadme')
+const { resolvePkg } = require('@vue/cli-shared-utils')
 
 const {
   defaults,
   saveOptions,
   loadOptions,
   savePreset,
-  validatePreset
+  validatePreset,
+  rcPath
 } = require('./options')
 
 const {
+  chalk,
+  execa,
+
   log,
   warn,
   error,
+  logWithSpinner,
+  stopSpinner,
+
   hasGit,
   hasProjectGit,
   hasYarn,
   hasPnpm3OrLater,
-  logWithSpinner,
-  stopSpinner,
+  hasPnpmVersionOrLater,
+
   exit,
   loadModule
 } = require('@vue/cli-shared-utils')
@@ -54,7 +59,8 @@ module.exports = class Creator extends EventEmitter {
     this.outroPrompts = this.resolveOutroPrompts()
     this.injectedPrompts = []
     this.promptCompleteCbs = []
-    this.createCompleteCbs = []
+    this.afterInvokeCbs = []
+    this.afterAnyInvokeCbs = []
 
     this.run = this.run.bind(this)
 
@@ -64,7 +70,7 @@ module.exports = class Creator extends EventEmitter {
 
   async create (cliOptions = {}, preset = null) {
     const isTestOrDebug = process.env.VUE_CLI_TEST || process.env.VUE_CLI_DEBUG
-    const { run, name, context, createCompleteCbs } = this
+    const { run, name, context, afterInvokeCbs, afterAnyInvokeCbs } = this
 
     if (!preset) {
       if (cliOptions.preset) {
@@ -92,8 +98,23 @@ module.exports = class Creator extends EventEmitter {
     preset.plugins['@vue/cli-service'] = Object.assign({
       projectName: name
     }, preset)
+
     if (cliOptions.bare) {
       preset.plugins['@vue/cli-service'].bare = true
+    }
+
+    // legacy support for router
+    if (preset.router) {
+      preset.plugins['@vue/cli-plugin-router'] = {}
+
+      if (preset.routerHistoryMode) {
+        preset.plugins['@vue/cli-plugin-router'].historyMode = true
+      }
+    }
+
+    // legacy support for vuex
+    if (preset.vuex) {
+      preset.plugins['@vue/cli-plugin-vuex'] = {}
     }
 
     const packageManager = (
@@ -102,25 +123,22 @@ module.exports = class Creator extends EventEmitter {
       (hasYarn() ? 'yarn' : null) ||
       (hasPnpm3OrLater() ? 'pnpm' : 'npm')
     )
+    const pm = new PackageManager({ context, forcePackageManager: packageManager })
 
     await clearConsole()
     logWithSpinner(`✨`, `Creating project in ${chalk.yellow(context)}.`)
     this.emit('creation', { event: 'creating' })
 
-    // get latest CLI version
-    const { current, latest } = await getVersions()
-    let latestMinor = `${semver.major(latest)}.${semver.minor(latest)}.0`
+    // get latest CLI plugin version
+    const { latestMinor } = await getVersions()
 
-    // if using `next` branch of cli
-    if (semver.gt(current, latest) && semver.prerelease(current)) {
-      latestMinor = current
-    }
     // generate package.json with plugin dependencies
     const pkg = {
       name,
       version: '0.1.0',
       private: true,
-      devDependencies: {}
+      devDependencies: {},
+      ...resolvePkg(context)
     }
     const deps = Object.keys(preset.plugins)
     deps.forEach(dep => {
@@ -133,9 +151,10 @@ module.exports = class Creator extends EventEmitter {
       // Other `@vue/*` packages' version may not be in sync with the cli itself.
       pkg.devDependencies[dep] = (
         preset.plugins[dep].version ||
-        ((/^@vue/.test(dep)) ? `^${latestMinor}` : `latest`)
+        ((/^@vue/.test(dep)) ? `~${latestMinor}` : `latest`)
       )
     })
+
     // write package.json
     await writeFileTree(context, {
       'package.json': JSON.stringify(pkg, null, 2)
@@ -152,14 +171,15 @@ module.exports = class Creator extends EventEmitter {
 
     // install plugins
     stopSpinner()
-    log(`⚙  Installing CLI plugins. This might take a while...`)
+    log(`⚙\u{fe0f}  Installing CLI plugins. This might take a while...`)
     log()
     this.emit('creation', { event: 'plugins-install' })
-    if (isTestOrDebug) {
+
+    if (isTestOrDebug && !process.env.VUE_CLI_TEST_DO_INSTALL_PLUGIN) {
       // in development, avoid installation process
       await require('./util/setupDevProject')(context)
     } else {
-      await installDeps(context, packageManager, cliOptions.registry)
+      await pm.install()
     }
 
     // run generator
@@ -169,7 +189,8 @@ module.exports = class Creator extends EventEmitter {
     const generator = new Generator(context, {
       pkg,
       plugins,
-      completeCbs: createCompleteCbs
+      afterInvokeCbs,
+      afterAnyInvokeCbs
     })
     await generator.generate({
       extractConfigFiles: preset.useConfigFiles
@@ -180,13 +201,16 @@ module.exports = class Creator extends EventEmitter {
     this.emit('creation', { event: 'deps-install' })
     log()
     if (!isTestOrDebug) {
-      await installDeps(context, packageManager, cliOptions.registry)
+      await pm.install()
     }
 
     // run complete cbs if any (injected by generators)
     logWithSpinner('⚓', `Running completion hooks...`)
     this.emit('creation', { event: 'completion-hooks' })
-    for (const cb of createCompleteCbs) {
+    for (const cb of afterInvokeCbs) {
+      await cb()
+    }
+    for (const cb of afterAnyInvokeCbs) {
       await cb()
     }
 
@@ -200,8 +224,12 @@ module.exports = class Creator extends EventEmitter {
 
     // generate a .npmrc file for pnpm, to persist the `shamefully-flatten` flag
     if (packageManager === 'pnpm') {
+      const pnpmConfig = hasPnpmVersionOrLater('4.0.0')
+        ? 'shamefully-hoist=true\n'
+        : 'shamefully-flatten=true\n'
+
       await writeFileTree(context, {
-        '.npmrc': 'shamefully-flatten=true\n'
+        '.npmrc': pnpmConfig
       })
     }
 
@@ -282,8 +310,9 @@ module.exports = class Creator extends EventEmitter {
     validatePreset(preset)
 
     // save preset
-    if (answers.save && answers.saveName) {
-      savePreset(answers.saveName, preset)
+    if (answers.save && answers.saveName && savePreset(answers.saveName, preset)) {
+      log()
+      log(`🎉  Preset ${chalk.yellow(answers.saveName)} saved in ${chalk.yellow(rcPath)}`)
     }
 
     debug('vue-cli:preset')(preset)
@@ -396,7 +425,7 @@ module.exports = class Creator extends EventEmitter {
         name: 'useConfigFiles',
         when: isManualMode,
         type: 'list',
-        message: 'Where do you prefer placing config for Babel, PostCSS, ESLint, etc.?',
+        message: 'Where do you prefer placing config for Babel, ESLint, etc.?',
         choices: [
           {
             name: 'In dedicated config files',

@@ -10,6 +10,7 @@ const rcPath = exports.rcPath = getRcPath('.vuerc')
 const presetSchema = createSchema(joi => joi.object().keys({
   bare: joi.boolean(),
   useConfigFiles: joi.boolean(),
+  // TODO: Use warn for router and vuex once @hapi/joi v16 releases
   router: joi.boolean(),
   routerHistoryMode: joi.boolean(),
   vuex: joi.boolean(),
@@ -19,7 +20,7 @@ const presetSchema = createSchema(joi => joi.object().keys({
 }))
 
 const schema = createSchema(joi => joi.object().keys({
-  latestVersion: joi.string().regex(/^\d+\.\d+\.\d+$/),
+  latestVersion: joi.string().regex(/^\d+\.\d+\.\d+(-(alpha|beta|rc)\.\d+)?$/),
   lastChecked: joi.date().timestamp(),
   packageManager: joi.string().only(['yarn', 'npm', 'pnpm']),
   useTaobaoRegistry: joi.boolean(),
@@ -31,8 +32,6 @@ exports.validatePreset = preset => validate(preset, presetSchema, msg => {
 })
 
 exports.defaultPreset = {
-  router: false,
-  vuex: false,
   useConfigFiles: false,
   cssPreprocessor: undefined,
   plugins: {
@@ -69,7 +68,7 @@ exports.loadOptions = () => {
         `Error loading saved preferences: ` +
         `~/.vuerc may be corrupted or have syntax errors. ` +
         `Please fix/delete it and re-run vue-cli in manual mode.\n` +
-        `(${e.message})`,
+        `(${e.message})`
       )
       exit(1)
     }
@@ -95,6 +94,7 @@ exports.saveOptions = toSave => {
   cachedOptions = options
   try {
     fs.writeFileSync(rcPath, JSON.stringify(options, null, 2))
+    return true
   } catch (e) {
     error(
       `Error saving preferences: ` +
@@ -107,5 +107,5 @@ exports.saveOptions = toSave => {
 exports.savePreset = (name, preset) => {
   const presets = cloneDeep(exports.loadOptions().presets || {})
   presets[name] = preset
-  exports.saveOptions({ presets })
+  return exports.saveOptions({ presets })
 }

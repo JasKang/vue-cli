@@ -1,12 +1,9 @@
 jest.mock('fs')
-jest.mock('/vue.config.js', () => ({ lintOnSave: false }), { virtual: true })
 jest.mock('vue-cli-plugin-foo', () => () => {}, { virtual: true })
 
 const fs = require('fs')
 const path = require('path')
 const Service = require('../lib/Service')
-
-const { logs } = require('@vue/cli-shared-utils')
 
 const mockPkg = json => {
   fs.writeFileSync('/package.json', JSON.stringify(json, null, 2))
@@ -63,8 +60,8 @@ test('env loading for custom mode', () => {
 test('loading plugins from package.json', () => {
   mockPkg({
     devDependencies: {
-      'bar': '^1.0.0',
-      '@vue/cli-plugin-babel': '^4.0.0-alpha.0',
+      bar: '^1.0.0',
+      '@vue/cli-plugin-babel': '^4.3.0',
       'vue-cli-plugin-foo': '^1.0.0'
     }
   })
@@ -77,34 +74,11 @@ test('loading plugins from package.json', () => {
 test('load project options from package.json', () => {
   mockPkg({
     vue: {
-      lintOnSave: true
+      lintOnSave: 'default'
     }
   })
   const service = createMockService()
-  expect(service.projectOptions.lintOnSave).toBe(true)
-})
-
-test('deprecate baseUrl', () => {
-  mockPkg({
-    vue: {
-      baseUrl: './foo/bar'
-    }
-  })
-  createMockService()
-  expect(logs.warn.some(([msg]) => msg.match('is deprecated now, please use "publicPath" instead.')))
-})
-
-test('discard baseUrl if publicPath also exists', () => {
-  mockPkg({
-    vue: {
-      baseUrl: '/foo/barbase/',
-      publicPath: '/foo/barpublic/'
-    }
-  })
-
-  const service = createMockService()
-  expect(logs.warn.some(([msg]) => msg.match('"baseUrl" will be ignored in favor of "publicPath"')))
-  expect(service.projectOptions.publicPath).toBe('/foo/barpublic/')
+  expect(service.projectOptions.lintOnSave).toBe('default')
 })
 
 test('handle option publicPath and outputDir correctly', () => {
@@ -129,6 +103,16 @@ test('normalize publicPath when relative', () => {
   expect(service.projectOptions.publicPath).toBe('foo/bar/')
 })
 
+test('allow custom protocol in publicPath', () => {
+  mockPkg({
+    vue: {
+      publicPath: 'customprotocol://foo/bar'
+    }
+  })
+  const service = createMockService()
+  expect(service.projectOptions.publicPath).toBe('customprotocol://foo/bar/')
+})
+
 test('keep publicPath when empty', () => {
   mockPkg({
     vue: {
@@ -140,32 +124,25 @@ test('keep publicPath when empty', () => {
 })
 
 test('load project options from vue.config.js', () => {
-  process.env.VUE_CLI_SERVICE_CONFIG_PATH = `/vue.config.js`
-  fs.writeFileSync('/vue.config.js', `module.exports = { lintOnSave: false }`)
+  jest.mock(path.resolve('/', 'vue.config.js'), () => ({ lintOnSave: false }), { virtual: true })
   mockPkg({
     vue: {
-      lintOnSave: true
+      lintOnSave: 'default'
     }
   })
   const service = createMockService()
-  fs.unlinkSync('/vue.config.js')
-  delete process.env.VUE_CLI_SERVICE_CONFIG_PATH
   // vue.config.js has higher priority
   expect(service.projectOptions.lintOnSave).toBe(false)
 })
 
-test('load project options from vue.config.js', () => {
-  process.env.VUE_CLI_SERVICE_CONFIG_PATH = `/vue.config.js`
-  fs.writeFileSync('/vue.config.js', '')  // only to ensure fs.existsSync returns true
+test('load project options from vue.config.js as a function', () => {
   jest.mock('/vue.config.js', () => function () { return { lintOnSave: false } }, { virtual: true })
   mockPkg({
     vue: {
-      lintOnSave: true
+      lintOnSave: 'default'
     }
   })
   const service = createMockService()
-  fs.unlinkSync('/vue.config.js')
-  delete process.env.VUE_CLI_SERVICE_CONFIG_PATH
   // vue.config.js has higher priority
   expect(service.projectOptions.lintOnSave).toBe(false)
 })
@@ -198,6 +175,27 @@ test('api: registerCommand', () => {
 
   service.run('foo', { n: 1 })
   expect(args).toEqual({ _: [], n: 1 })
+})
+
+test('api: --skip-plugins', () => {
+  let untouched = true
+  const service = createMockService([{
+    id: 'test-command',
+    apply: api => {
+      api.registerCommand('foo', _args => {
+
+      })
+    }
+  },
+  {
+    id: 'vue-cli-plugin-test-plugin',
+    apply: api => {
+      untouched = false
+    }
+  }], false)
+
+  service.run('foo', { 'skip-plugins': 'test-plugin' })
+  expect(untouched).toEqual(true)
 })
 
 test('api: defaultModes', () => {

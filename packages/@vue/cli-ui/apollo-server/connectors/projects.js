@@ -6,7 +6,7 @@ const { getPromptModules } = require('@vue/cli/lib/util/createTools')
 const { getFeatures } = require('@vue/cli/lib/util/features')
 const { defaults } = require('@vue/cli/lib/options')
 const { toShortPluginId, execa } = require('@vue/cli-shared-utils')
-const { progress: installProgress } = require('@vue/cli/lib/util/installDeps')
+const { progress: installProgress } = require('@vue/cli/lib/util/executeCommand')
 const parseGitConfig = require('parse-git-config')
 // Connectors
 const progress = require('./progress')
@@ -49,7 +49,7 @@ function findByPath (file, context) {
 }
 
 function autoClean (projects, context) {
-  let result = []
+  const result = []
   for (const project of projects) {
     if (fs.existsSync(project.path)) {
       result.push(project)
@@ -77,7 +77,7 @@ function getLast (context) {
 function generatePresetDescription (preset) {
   let description = preset.features.join(', ')
   if (preset.raw.useConfigFiles) {
-    description += ` (Use config files)`
+    description += ' (Use config files)'
   }
   return description
 }
@@ -347,7 +347,7 @@ async function create (input, context) {
     removeCreator()
 
     notify({
-      title: `Project created`,
+      title: 'Project created',
       message: `Project ${cwd.get()} created`,
       icon: 'done'
     })
@@ -431,6 +431,11 @@ function setFavorite ({ id, favorite }, context) {
   return findOne(id, context)
 }
 
+function rename ({ id, name }, context) {
+  context.db.get('projects').find({ id }).assign({ name }).write()
+  return findOne(id, context)
+}
+
 function getType (project, context) {
   if (typeof project === 'string') {
     project = findByPath(project, context)
@@ -461,7 +466,7 @@ async function autoOpenLastProject () {
     try {
       await open(id, context)
     } catch (e) {
-      log(`Project can't be auto-opened`, id)
+      log('Project can\'t be auto-opened', id)
     }
   }
 }
@@ -483,6 +488,7 @@ module.exports = {
   remove,
   resetCwd,
   setFavorite,
+  rename,
   initCreator,
   removeCreator,
   getType,

@@ -1,7 +1,11 @@
+const pluginDevDeps = require('../package.json').devDependencies
+
 module.exports = (api, {
   classComponent,
   tsLint,
-  lintOn = []
+  lintOn = [],
+  convertJsToTs,
+  allowJs
 }, _, invoking) => {
   if (typeof lintOn === 'string') {
     lintOn = lintOn.split(',')
@@ -9,15 +13,15 @@ module.exports = (api, {
 
   api.extendPackage({
     devDependencies: {
-      typescript: '^3.4.5'
+      typescript: pluginDevDeps.typescript
     }
   })
 
   if (classComponent) {
     api.extendPackage({
       dependencies: {
-        'vue-class-component': '^7.0.2',
-        'vue-property-decorator': '^8.1.0'
+        'vue-class-component': pluginDevDeps['vue-class-component'],
+        'vue-property-decorator': pluginDevDeps['vue-property-decorator']
       }
     })
   }
@@ -40,7 +44,7 @@ module.exports = (api, {
     if (lintOn.includes('commit')) {
       api.extendPackage({
         devDependencies: {
-          'lint-staged': '^8.1.5'
+          'lint-staged': '^9.5.0'
         },
         gitHooks: {
           'pre-commit': 'lint-staged'
@@ -82,5 +86,5 @@ module.exports = (api, {
     hasJest: api.hasPlugin('unit-jest')
   })
 
-  require('./convert')(api, { tsLint })
+  require('./convert')(api, { tsLint, convertJsToTs })
 }
